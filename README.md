@@ -1,10 +1,12 @@
 # AudioBookSlicer: A collection of tools to create an MP3 audiobook file that includes proper chapter markers with associated cover images.
 
-This utility splits a DRM-free `.m4b`/`.m4a` audiobook into one file per chapter using chapter metadata.
+The toolkit includes:
+- A **PyQt6 GUI** (`gui.py`) that converts a WAV with Adobe Audition markers into a chaptered MP3, with a **Tools** menu for the helper scripts below
+- `split_m4b_chapters.py`: split a DRM-free `.m4b`/`.m4a` into one WAV per chapter
+- `wav_markers_to_mp3.py`: encode a marker WAV into a chaptered MP3 with per-chapter artwork
+- `strip_chapter_number_prefix.py`, `prefix_book_title.py`, `rename_chapters_offset.py`: batch file-rename helpers
 
-It uses:
-- `ffprobe` to read chapter start/end times
-- `ffmpeg` to extract each chapter with `-c copy` (no audio re-transcode) by default
+All tools use `ffprobe`/`ffmpeg` for audio work.
 
 ## AudioBook Slicer GUI
 
@@ -12,15 +14,20 @@ A PyQt6 graphical interface for converting WAV files with Adobe Audition markers
 
 ### GUI Features
 
-- **Load WAV files** with chapter markers (Adobe Audition cue point format)
+- **Import WAV files** with chapter markers (Adobe Audition cue point format) via **File → Import Adobe Audition WAV File…** (`Ctrl+O`)
 - **Edit chapter titles** in-place (double-click any title to edit)
 - **Reorder chapters** via drag/drop in the chapter list
 - **Preview chapter artwork** by selecting chapters in the list
 - **Live encode progress** with per-chapter progress bars
-- **Adjust encoding options**: VBR quality, CBR bitrate, mono/stereo, or dual mono
+- **Adjust encoding options**: VBR quality, CBR bitrate, mono/stereo
 - **Size limit warnings**: Specify file size limit with unit selection (bytes, KB, MB, GB)
-- **Persistent settings**: Last-opened directory remembered between sessions
-- **Reset controls**: Reset all chapters to original markers or reset the entire app to defaults
+- **Persistent settings**: Last-opened directories and the last chapter offset are remembered between sessions
+- **Reset controls** in the **File** menu:
+  - **Reset Markers**: restore the chapter list to the original WAV markers (available only once a WAV with markers is loaded)
+  - **Reset**: clear the loaded file and return every setting to its default
+- **Tools menu** for the helper scripts (see [Tools Menu](#tools-menu))
+
+The path of the loaded WAV is shown in the window title.
 
 ### Running the GUI
 
@@ -51,21 +58,41 @@ Then double-click `run_gui.ps1` to launch.
 
 ### GUI Workflow
 
-1. Click **Open WAV File** and select a WAV file with chapter markers
-2. Enter your **Book Title** (used for matching cover artwork files)
+1. Choose **File → Import Adobe Audition WAV File…** and select a WAV file with chapter markers
+2. Enter your **Book Title** (used for the output filename and MP3 tags)
 3. Edit chapter titles by double-clicking them in the table
-4. (Optional) **Drag chapters** to reorder them—the output will be encoded in your custom order
+4. (Optional) **Drag chapters** to reorder them. The output is encoded in your custom order
 5. (Optional) Place cover images in the same folder as the WAV (e.g., `Book Title.jpg`, `Book Title.png`)
 6. Click **Process Covers** to associate artwork with chapters
-7. Choose encoding options (VBR/CBR, sample rate, mono/stereo)
+7. Choose encoding options (VBR/CBR, mono/stereo)
 8. Set a **Size Limit** if desired (file size warning threshold)
-9. Click **Encode** and choose output location
+9. Click **Encode MP3**
 10. Watch live progress bars update as the MP3 is encoded with chapter boundaries
+
+### Tools Menu
+
+Each tool asks for its input, runs the matching script, and shows the console output in a separate window. You can keep working in the main window while a tool runs.
+
+| Menu item | Prompts for | Script |
+|---|---|---|
+| **Prefix Book Title to Files…** | Folder, book title (defaults to the current Book Title) | `prefix_book_title.py` |
+| **Offset Chapter Numbers…** | Folder, offset to subtract | `rename_chapters_offset.py` |
+| **Split M4B into WAV Files…** | `.m4b`/`.m4a` file, output folder (default or custom) | `split_m4b_chapters.py` |
+| **Strip Chapter Number Prefix From WAV Files…** | Folder | `strip_chapter_number_prefix.py` |
+
+The rename tools run in **preview mode** first. When the preview succeeds, click **Apply Changes** in the output window to rename the files. If you close the window without applying, nothing changes.
+
+**Split M4B into WAV Files** asks where to write the WAVs after you pick the audiobook:
+- **Use Default**: `<book>_chapters` next to the selected file
+- **Choose Folder…**: any folder you pick (remembered for next time)
+
+The split then runs immediately; there is no preview step.
 
 ## Prerequisites
 
 1. Python 3.9+
 2. FFmpeg (must include both `ffmpeg` and `ffprobe`)
+3. PyQt6 (GUI only)
 
 ### Windows FFmpeg install options
 
@@ -79,16 +106,16 @@ ffmpeg -version
 ffprobe -version
 ```
 
-## Usage
+## Split M4B Into Chapter WAV Files
 
 ```powershell
 python .\split_m4b_chapters.py "C:\path\to\book.m4b"
 ```
 
 Default behavior:
-- Creates folder `<input_stem>_chapters` next to input file
-- Writes files like `001 - Chapter Name.m4b`
-- Uses stream copy (`-c copy`) for no-transcode extraction
+- Creates folder `<input_stem>_chapters` in the current directory
+- Writes files like `001 - Chapter Name.wav`
+- Decodes each chapter to PCM WAV at the source sample rate and bit depth
 
 ### Common options
 
@@ -99,14 +126,19 @@ python .\split_m4b_chapters.py "book.m4b" -o ".\out"
 # Show commands only (no file writes)
 python .\split_m4b_chapters.py "book.m4b" --dry-run
 
-# Retry failed chapters with AAC encoding
-python .\split_m4b_chapters.py "book.m4b" --fallback-reencode --aac-bitrate 96k
+# Overwrite existing output files instead of creating unique names
+python .\split_m4b_chapters.py "book.m4b" --overwrite
+
+# Select a different audio stream
+python .\split_m4b_chapters.py "book.m4b" --audio-stream 1
 
 # If ffmpeg/ffprobe are not on PATH
 python .\split_m4b_chapters.py "book.m4b" --ffmpeg "C:\ffmpeg\bin\ffmpeg.exe" --ffprobe "C:\ffmpeg\bin\ffprobe.exe"
 ```
 
 ## Convert Marker WAV To Chaptered MP3
+
+The GUI is the recommended frontend for this script.
 
 If you have a single combined WAV with Adobe Audition markers (RIFF cue markers),
 you can encode it to chaptered MP3 and carry chapters plus per-chapter artwork over.
@@ -151,40 +183,47 @@ You can also pass explicit FFmpeg paths if needed:
 python .\wav_markers_to_mp3.py "combined.wav" --ffmpeg "C:\ffmpeg\bin\ffmpeg.exe" --ffprobe "C:\ffmpeg\bin\ffprobe.exe"
 ```
 
-## Strip Chapter Number Prefix From WAV Files
+## File Rename Helpers
+
+These scripts share the same safety behavior:
+- **Preview by default.** Nothing is renamed until you pass `--apply`.
+- **Fail before renaming.** If any file has an unexpected name format, two files would get the same name, or a target name already exists, the script stops and no files are renamed.
+- **Two-pass rename.** Each file is first moved to a temporary name, so swapping or shifting names within a folder is safe.
+- `--filter` takes a filename glob (for example, `*.wav`).
+
+### Strip Chapter Number Prefix From WAV Files
 
 If you have files named like `024 - Chapter 24.wav`, `024 - Chapter 24 - Part 1.wav`,
 `000 - Prologue.wav`, or `040 - Epilogue.wav`, you can remove the leading numeric
 prefix with:
 
 ```powershell
-# Preview only
-.\strip_chapter_number_prefix.ps1
-
-# Rename files
-.\strip_chapter_number_prefix.ps1 -Apply
+# Preview only (current folder)
+python .\strip_chapter_number_prefix.py
 
 # Target a specific folder
-.\strip_chapter_number_prefix.ps1 "C:\path\to\chapter\folder"
-.\strip_chapter_number_prefix.ps1 "C:\path\to\chapter\folder" -Apply
+python .\strip_chapter_number_prefix.py "C:\path\to\chapter\folder"
+python .\strip_chapter_number_prefix.py "C:\path\to\chapter\folder" --apply
 
 # Include subfolders
-.\strip_chapter_number_prefix.ps1 "C:\path\to\library" -Recurse
-.\strip_chapter_number_prefix.ps1 "C:\path\to\library" -Recurse -Apply
+python .\strip_chapter_number_prefix.py "C:\path\to\library" --recurse
+python .\strip_chapter_number_prefix.py "C:\path\to\library" --recurse --apply
 ```
 
-## Prefix Book Title To Files
+### Prefix Book Title To Files
 
-If you want to prepend the book title to every filename in a folder, including
+To prepend the book title to every filename in a folder, including
 sidecar files like `.pkf`, run:
 
 ```powershell
-# Preview only, then enter the title when prompted
-.\prefix_book_title.ps1 "C:\path\to\chapter\folder"
+# Preview only; you are prompted for the title
+python .\prefix_book_title.py "C:\path\to\chapter\folder"
 
-# Rename files, then enter the title when prompted
-.\prefix_book_title.ps1 "C:\path\to\chapter\folder" -Apply
+# Pass the title directly and rename
+python .\prefix_book_title.py "C:\path\to\chapter\folder" --title "Role Model" --apply
 ```
+
+Files that already start with `<title> - ` are skipped.
 
 Example:
 
@@ -193,8 +232,25 @@ Chapter 1.wav -> Role Model - Chapter 1.wav
 Chapter 1.pkf -> Role Model - Chapter 1.pkf
 ```
 
+### Offset Chapter Numbers
+
+For files named `<NNN> - Chapter <N>.wav`, subtract an offset from both numbers:
+
+```powershell
+# Preview only (default offset: 29)
+python .\rename_chapters_offset.py "C:\path\to\chapter\folder" --offset 29
+
+# Rename
+python .\rename_chapters_offset.py "C:\path\to\chapter\folder" --offset 29 --apply
+```
+
+Example (offset 29):
+
+```text
+030 - Chapter 30.wav -> 001 - Chapter 1.wav
+```
+
 ## Notes
 
 - Input must be DRM-free.
 - If your file has multiple audio streams, use `--audio-stream` to select one.
-- Some files may fail stream copy at certain boundaries depending on container/stream quirks; use `--fallback-reencode` if needed.

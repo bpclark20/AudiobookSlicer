@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""GUI front-end for wav_markers_to_mp3.py — chapter list viewer."""
+"""GUI front-end for wav_markers_to_mp3.py, plus a Tools menu for the helper scripts."""
 
 from __future__ import annotations
 
@@ -30,20 +30,45 @@ from wav_markers_to_mp3 import (  # noqa: E402
 )
 
 try:
-    from PyQt6.QtCore import QEvent, QModelIndex, QObject, QSettings, QThread, QTimer, Qt, pyqtSignal  # noqa: E402
-    from PyQt6.QtGui import QColor, QDropEvent, QMouseEvent, QPainter, QPixmap, QResizeEvent  # noqa: E402
+    from PyQt6.QtCore import (
+        QEvent,
+        QModelIndex,
+        QObject,
+        QProcess,
+        QProcessEnvironment,
+        QSettings,
+        QThread,
+        QTimer,
+        Qt,
+        pyqtSignal,
+    )  # noqa: E402
+    from PyQt6.QtGui import (
+        QAction,
+        QCloseEvent,
+        QColor,
+        QDropEvent,
+        QFontDatabase,
+        QKeySequence,
+        QMouseEvent,
+        QPainter,
+        QPixmap,
+        QResizeEvent,
+    )  # noqa: E402
     from PyQt6.QtWidgets import (  # noqa: E402
         QAbstractItemView,
         QApplication,
         QButtonGroup,
         QComboBox,
+        QDialog,
         QFileDialog,
         QHBoxLayout,
         QHeaderView,
+        QInputDialog,
         QLabel,
         QLineEdit,
         QMainWindow,
         QMessageBox,
+        QPlainTextEdit,
         QPushButton,
         QRadioButton,
         QProgressBar,
@@ -400,6 +425,119 @@ class EncodeWorker(QObject):
             sys.stderr = old_stderr
 
 
+class ToolRunDialog(QDialog):
+    """Runs one of the helper scripts and streams its console output.
+
+    When apply_flag is given, the script is first run in preview mode; after a
+    successful preview the "Apply Changes" button re-runs it with that flag.
+    """
+
+    def __init__(
+        self,
+        parent: QWidget,
+        title: str,
+        script: str,
+        args: list[str],
+        *,
+        working_dir: Path,
+        apply_flag: str | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.setWindowTitle(title)
+        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        self.resize(820, 480)
+
+        self._script = _HERE / script
+        self._args = list(args)
+        self._apply_flag = apply_flag
+        self._applied = False
+
+        layout = QVBoxLayout(self)
+
+        self._output = QPlainTextEdit()
+        self._output.setReadOnly(True)
+        self._output.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
+        self._output.setFont(QFontDatabase.systemFont(QFontDatabase.SystemFont.FixedFont))
+        layout.addWidget(self._output)
+
+        buttons = QHBoxLayout()
+        buttons.addStretch()
+        self._apply_btn = QPushButton("Apply Changes")
+        self._apply_btn.setVisible(apply_flag is not None)
+        self._apply_btn.setEnabled(False)
+        self._apply_btn.clicked.connect(self._on_apply_clicked)
+        buttons.addWidget(self._apply_btn)
+        self._close_btn = QPushButton("Close")
+        self._close_btn.clicked.connect(self.close)
+        buttons.addWidget(self._close_btn)
+        layout.addLayout(buttons)
+
+        self._process = QProcess(self)
+        self._process.setWorkingDirectory(str(working_dir))
+        self._process.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
+        env = QProcessEnvironment.systemEnvironment()
+        env.insert("PYTHONIOENCODING", "utf-8")
+        env.insert("PYTHONUNBUFFERED", "1")
+        self._process.setProcessEnvironment(env)
+        self._process.readyReadStandardOutput.connect(self._on_output_ready)
+        self._process.finished.connect(self._on_process_finished)
+        self._process.errorOccurred.connect(self._on_process_error)
+
+    def start(self) -> None:
+        self._run(self._args)
+
+    def _run(self, args: list[str]) -> None:
+        full_args = [str(self._script), *args]
+        self._append(f"> python {subprocess.list2cmdline(full_args)}\n\n")
+        self._apply_btn.setEnabled(False)
+        self._process.start(sys.executable, full_args)
+
+    def _append(self, text: str) -> None:
+        self._output.moveCursor(self._output.textCursor().MoveOperation.End)
+        self._output.insertPlainText(text)
+        self._output.ensureCursorVisible()
+
+    def _on_output_ready(self) -> None:
+        data = bytes(self._process.readAllStandardOutput().data())
+        self._append(data.decode("utf-8", errors="replace").replace("\r\n", "\n"))
+
+    def _on_process_finished(self, exit_code: int, _status: QProcess.ExitStatus) -> None:
+        self._append(f"\n[Process exited with code {exit_code}]\n")
+        if self._apply_flag is None or self._applied:
+            return
+        if exit_code == 0:
+            self._apply_btn.setEnabled(True)
+            self._append("\nReview the preview above, then click Apply Changes to rename the files.\n")
+
+    def _on_process_error(self, error: QProcess.ProcessError) -> None:
+        if error == QProcess.ProcessError.FailedToStart:
+            self._append(f"\n[Failed to start: {self._process.errorString()}]\n")
+
+    def _on_apply_clicked(self) -> None:
+        if self._apply_flag is None or self._applied:
+            return
+        self._applied = True
+        self._append("\n" + "─" * 60 + "\n")
+        self._run([*self._args, self._apply_flag])
+
+    def closeEvent(self, a0: QCloseEvent | None) -> None:
+        if self._process.state() != QProcess.ProcessState.NotRunning:
+            reply = QMessageBox.question(
+                self,
+                "Tool Still Running",
+                "The tool is still running. Stop it and close this window?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                if a0 is not None:
+                    a0.ignore()
+                return
+            self._process.kill()
+            self._process.waitForFinished(3000)
+        super().closeEvent(a0)
+
+
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
@@ -438,30 +576,7 @@ class MainWindow(QMainWindow):
         root.setContentsMargins(8, 8, 8, 8)
         root.setSpacing(6)
 
-        # ── Top bar: file picker ──────────────────────────────────────────────
-        top = QHBoxLayout()
-
-        self._open_btn = QPushButton("Open WAV File…")
-        self._open_btn.setFixedWidth(140)
-        self._open_btn.clicked.connect(self._on_open_wav)
-        top.addWidget(self._open_btn)
-
-        self._reset_btn = QPushButton("Reset")
-        self._reset_btn.setFixedWidth(70)
-        self._reset_btn.clicked.connect(self._on_reset_clicked)
-        top.addWidget(self._reset_btn)
-
-        self._reset_markers_btn = QPushButton("Reset Markers")
-        self._reset_markers_btn.setFixedWidth(100)
-        self._reset_markers_btn.setEnabled(False)
-        self._reset_markers_btn.clicked.connect(self._on_reset_markers_clicked)
-        top.addWidget(self._reset_markers_btn)
-
-        self._file_label = QLabel("No file selected")
-        self._file_label.setSizePolicy(
-            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred
-        )
-        top.addWidget(self._file_label)
+        self._build_menu_bar()
 
         # ── Output settings + cover preview ─────────────────────────────────
         top_settings_row = QHBoxLayout()
@@ -472,7 +587,6 @@ class MainWindow(QMainWindow):
         settings_left = QVBoxLayout()
         settings_left.setSpacing(6)
         settings_left.setAlignment(Qt.AlignmentFlag.AlignTop)
-        settings_left.addLayout(top)
 
         title_row = QHBoxLayout()
 
@@ -718,6 +832,191 @@ class MainWindow(QMainWindow):
         self._status.showMessage("Open a WAV file to begin.")
         self._on_encode_mode_changed()
 
+    # ── Menu bar ──────────────────────────────────────────────────────────────
+
+    def _build_menu_bar(self) -> None:
+        menu_bar = self.menuBar()
+        assert menu_bar is not None
+
+        file_menu = menu_bar.addMenu("&File")
+        assert file_menu is not None
+
+        self._open_action = QAction("&Import Adobe Audition WAV File…", self)
+        self._open_action.setShortcut(QKeySequence.StandardKey.Open)
+        self._open_action.triggered.connect(self._on_open_wav)
+        file_menu.addAction(self._open_action)
+
+        file_menu.addSeparator()
+
+        self._reset_markers_action = QAction("Reset &Markers", self)
+        self._reset_markers_action.setEnabled(False)
+        self._reset_markers_action.triggered.connect(self._on_reset_markers_clicked)
+        file_menu.addAction(self._reset_markers_action)
+
+        self._reset_action = QAction("&Reset", self)
+        self._reset_action.triggered.connect(self._on_reset_clicked)
+        file_menu.addAction(self._reset_action)
+
+        file_menu.addSeparator()
+
+        exit_action = QAction("E&xit", self)
+        exit_action.setShortcut(QKeySequence.StandardKey.Quit)
+        exit_action.triggered.connect(self.close)
+        file_menu.addAction(exit_action)
+
+        tools_menu = menu_bar.addMenu("&Tools")
+        assert tools_menu is not None
+        tools = [
+            ("Prefix Book Title to Files…", self._on_tool_prefix_book_title),
+            ("Offset Chapter Numbers…", self._on_tool_rename_chapters_offset),
+            ("Split M4B into WAV Files…", self._on_tool_split_m4b),
+            ("Strip Chapter Number Prefix From WAV Files…", self._on_tool_strip_prefix),
+        ]
+        for label, handler in tools:
+            action = QAction(label, self)
+            action.triggered.connect(handler)
+            tools_menu.addAction(action)
+
+    # ── Tools ─────────────────────────────────────────────────────────────────
+
+    def _remembered_dir(self, key: str) -> str:
+        value = self._settings.value(key, "")
+        text = str(value).strip() if value is not None else ""
+        if text and Path(text).is_dir():
+            return text
+        return self._default_open_wav_dir()
+
+    def _prompt_tool_folder(self, caption: str) -> Path | None:
+        path_str = QFileDialog.getExistingDirectory(
+            self, caption, self._remembered_dir("lastToolDir")
+        )
+        if not path_str:
+            return None
+        self._settings.setValue("lastToolDir", path_str)
+        return Path(path_str)
+
+    def _launch_tool(
+        self,
+        title: str,
+        script: str,
+        args: list[str],
+        working_dir: Path,
+        apply_flag: str | None = None,
+    ) -> None:
+        dialog = ToolRunDialog(
+            self, title, script, args, working_dir=working_dir, apply_flag=apply_flag
+        )
+        dialog.show()
+        dialog.start()
+
+    def _on_tool_prefix_book_title(self) -> None:
+        folder = self._prompt_tool_folder("Prefix Book Title — Select Folder")
+        if folder is None:
+            return
+        title, ok = QInputDialog.getText(
+            self,
+            "Prefix Book Title",
+            "Book title to prepend to every file:",
+            text=self._current_book_title(),
+        )
+        title = title.strip()
+        if not ok or not title:
+            return
+        self._launch_tool(
+            "Prefix Book Title",
+            "prefix_book_title.py",
+            [str(folder), "--title", title],
+            folder,
+            apply_flag="--apply",
+        )
+
+    def _on_tool_rename_chapters_offset(self) -> None:
+        folder = self._prompt_tool_folder("Offset Chapter Numbers — Select Folder")
+        if folder is None:
+            return
+        last_offset = self._settings.value("lastChapterOffset", 29)
+        try:
+            default_offset = int(cast(Any, last_offset))
+        except (TypeError, ValueError):
+            default_offset = 29
+        offset, ok = QInputDialog.getInt(
+            self,
+            "Offset Chapter Numbers",
+            "Subtract this amount from each chapter number:",
+            default_offset,
+            -9999,
+            9999,
+        )
+        if not ok:
+            return
+        self._settings.setValue("lastChapterOffset", offset)
+        self._launch_tool(
+            "Offset Chapter Numbers",
+            "rename_chapters_offset.py",
+            [str(folder), "--offset", str(offset)],
+            folder,
+            apply_flag="--apply",
+        )
+
+    def _on_tool_split_m4b(self) -> None:
+        path_str, _ = QFileDialog.getOpenFileName(
+            self,
+            "Split M4B — Select Audiobook",
+            self._remembered_dir("lastToolDir"),
+            "Audiobooks (*.m4b *.m4a);;All Files (*)",
+        )
+        if not path_str:
+            return
+        m4b_path = Path(path_str)
+        self._settings.setValue("lastToolDir", str(m4b_path.parent))
+
+        default_output = m4b_path.parent / f"{m4b_path.stem}_chapters"
+        msg_box = QMessageBox(self)
+        msg_box.setWindowTitle("Split M4B — Output Folder")
+        msg_box.setIcon(QMessageBox.Icon.Question)
+        msg_box.setText(f"Where should the WAV files be written?\n\nDefault:\n{default_output}")
+        default_btn = msg_box.addButton("Use Default", QMessageBox.ButtonRole.AcceptRole)
+        choose_btn = msg_box.addButton("Choose Folder…", QMessageBox.ButtonRole.ActionRole)
+        msg_box.addButton("Cancel", QMessageBox.ButtonRole.RejectRole)
+        msg_box.setDefaultButton(default_btn)
+        msg_box.exec()
+        clicked = msg_box.clickedButton()
+
+        args = [str(m4b_path)]
+        if clicked is choose_btn:
+            output_str = QFileDialog.getExistingDirectory(
+                self,
+                "Split M4B — Select Output Folder",
+                self._remembered_dir("lastSplitOutputDir"),
+            )
+            if not output_str:
+                return
+            self._settings.setValue("lastSplitOutputDir", output_str)
+            args += ["--output-dir", output_str]
+        elif clicked is not default_btn:
+            return
+
+        # Run from the audiobook's folder so the default <stem>_chapters output
+        # directory is created next to the input file.
+        self._launch_tool(
+            "Split M4B into WAV Files",
+            "split_m4b_chapters.py",
+            args,
+            m4b_path.parent,
+        )
+
+    def _on_tool_strip_prefix(self) -> None:
+        folder = self._prompt_tool_folder("Strip Chapter Number Prefix — Select Folder")
+        if folder is None:
+            return
+        self._launch_tool(
+            "Strip Chapter Number Prefix",
+            "strip_chapter_number_prefix.py",
+            [str(folder)],
+            folder,
+            apply_flag="--apply",
+        )
+
     # ── Slots ─────────────────────────────────────────────────────────────────
 
     def _default_open_wav_dir(self) -> str:
@@ -736,7 +1035,7 @@ class MainWindow(QMainWindow):
     def _on_open_wav(self) -> None:
         start_dir = self._default_open_wav_dir()
         path_str, _ = QFileDialog.getOpenFileName(
-            self, "Open WAV File", start_dir, "WAV Files (*.wav)"
+            self, "Import Adobe Audition WAV File", start_dir, "WAV Files (*.wav)"
         )
         if path_str:
             selected_parent = Path(path_str).parent
@@ -753,7 +1052,7 @@ class MainWindow(QMainWindow):
         self._row_cover_paths.clear()
         self._next_cover_action = "all"
 
-        self._file_label.setText("No file selected")
+        self._update_window_title()
         self._book_title_edit.blockSignals(True)
         self._book_title_edit.clear()
         self._book_title_edit.blockSignals(False)
@@ -768,7 +1067,7 @@ class MainWindow(QMainWindow):
         self._set_controls_enabled(True)
         self._save_as_btn.setEnabled(False)
         self._covers_btn.setEnabled(False)
-        self._reset_markers_btn.setEnabled(False)
+        self._reset_markers_action.setEnabled(False)
 
         self._vbr_radio.setChecked(True)
         self._vbr_q_combo.setCurrentIndex(5)
@@ -856,7 +1155,7 @@ class MainWindow(QMainWindow):
         self._missing_cover_rows.clear()
         self._row_cover_paths.clear()
         self._next_cover_action = "all"
-        self._file_label.setText(str(wav_path))
+        self._update_window_title()
         self._duration_edit.setText(_format_duration_label(duration_sec))
         self._set_book_title(wav_path.stem, auto_unique_output=False)
         initial_output_path = self._output_path_for_current_title()
@@ -871,13 +1170,19 @@ class MainWindow(QMainWindow):
         self._update_cover_preview(None)
         self._covers_btn.setEnabled(True)
         self._save_as_btn.setEnabled(True)
-        self._reset_markers_btn.setEnabled(True)
+        self._reset_markers_action.setEnabled(True)
         self._encode_btn.setEnabled(True)
         self._encode_progress.setValue(0)
 
         count = len(chapters)
         noun = "chapter" if count == 1 else "chapters"
         self._status.showMessage(f"Loaded {count} {noun} — {wav_path.name}")
+
+    def _update_window_title(self) -> None:
+        if self._wav_path is None:
+            self.setWindowTitle("AudioBook Slicer")
+        else:
+            self.setWindowTitle(f"AudioBook Slicer — {self._wav_path}")
 
     def _set_book_title(self, title: str, auto_unique_output: bool = False) -> None:
         self._book_title_edit.blockSignals(True)
@@ -1168,9 +1473,9 @@ class MainWindow(QMainWindow):
         self._set_output_path(selected_path)
 
     def _set_controls_enabled(self, enabled: bool) -> None:
-        self._open_btn.setEnabled(enabled)
-        self._reset_btn.setEnabled(enabled)
-        self._reset_markers_btn.setEnabled(enabled and bool(self._chapters))
+        self._open_action.setEnabled(enabled)
+        self._reset_action.setEnabled(enabled)
+        self._reset_markers_action.setEnabled(enabled and bool(self._original_chapters))
         self._save_as_btn.setEnabled(enabled and self._wav_path is not None)
         self._covers_btn.setEnabled(enabled and bool(self._chapters))
         self._book_title_edit.setEnabled(enabled)
