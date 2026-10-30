@@ -1,7 +1,7 @@
-# AudioBookSlicer: A collection of tools to create an MP3 audiobook file that includes proper chapter markers with associated cover images.
+# AudioBookSlicer: A collection of tools to create an MP3 or M4B audiobook file that includes proper chapter markers with associated cover images.
 
 The toolkit includes:
-- A **PyQt6 GUI** (`gui.py`) that converts a WAV with Adobe Audition markers into a chaptered MP3, with a **Tools** menu for the helper scripts below
+- A **PyQt6 GUI** (`gui.py`) that turns a WAV with Adobe Audition markers, or a list of chapter WAVs, into a chaptered MP3 or iPod-compatible M4B, with a **Tools** menu for the helper scripts below
 - `split_m4b_chapters.py`: split a DRM-free `.m4b`/`.m4a` into one WAV per chapter
 - `wav_markers_to_mp3.py`: encode a marker WAV into a chaptered MP3 with per-chapter artwork
 - `strip_chapter_number_prefix.py`, `prefix_book_title.py`, `rename_chapters_offset.py`: batch file-rename helpers
@@ -10,24 +10,32 @@ All tools use `ffprobe`/`ffmpeg` for audio work.
 
 ## AudioBook Slicer GUI
 
-A PyQt6 graphical interface for converting WAV files with Adobe Audition markers into chaptered MP3 files.
+A PyQt6 graphical interface for turning WAV files into chaptered MP3 or M4B audiobooks.
 
 ### GUI Features
 
 - **Import WAV files** with chapter markers (Adobe Audition cue point format) via **File → Import Adobe Audition WAV File…** (`Ctrl+O`)
+- **Build a chapter list from individual WAV files** via **File → Add WAV Files…**. Each file becomes one chapter, and the files are joined in table order when you encode
+- **Playlists** (`.abspl`): **File → Save Playlist…** (`Ctrl+S`) saves the current file order. **File → Open Playlist…** loads it again. A playlist is a UTF-8 text file: a `# AudioBookSlicer playlist v1` header followed by one WAV path per line. `.m3u`/`.m3u8`/`.txt` lists also open
+- **Remove Selected Chapter** (File menu) drops a row from a file-based chapter list
 - **Edit chapter titles** in-place (double-click any title to edit)
 - **Reorder chapters** via drag/drop in the chapter list
 - **Preview chapter artwork** by selecting chapters in the list
-- **Live encode progress** with per-chapter progress bars
-- **Adjust encoding options**: VBR quality, CBR bitrate, mono/stereo
+- **Preview chapter audio**: select a chapter and click **Start Preview**. Playback continues into the next chapter. Click inside the playing chapter's title to seek. The output device is chosen in **Tools → Options…**
+- **Output format**: **MP3** (LAME) or **M4B** (AAC, iPod-compatible). See [MP3 vs M4B](#mp3-vs-m4b)
+- **Encoding options**: VBR quality level (0 best to 9 smallest) or CBR bitrate, mono/stereo. Each format remembers its own settings
+- **Live encode progress** with per-chapter progress bars. **Cancel Encode** stops ffmpeg immediately and removes partial files
+- **Intermediate WAV reuse**: when chapters are joined or reordered, you can keep the joined WAV after encoding. A second encode with the same chapter order (for example MP3 and then M4B) skips rebuilding it. It is deleted on quit, Reset, or when the order changes
 - **Size limit warnings**: Specify file size limit with unit selection (bytes, KB, MB, GB)
-- **Persistent settings**: Last-opened directories and the last chapter offset are remembered between sessions
+- **Options** (**Tools → Options…**): default format and encode settings, size limit, and preview device. Defaults load at startup and on **Reset**. **OK** also applies them to the current window
+- **Persistent settings**: Options, last-opened directories, and the last chapter offset are remembered between sessions
 - **Reset controls** in the **File** menu:
-  - **Reset Markers**: restore the chapter list to the original WAV markers (available only once a WAV with markers is loaded)
-  - **Reset**: clear the loaded file and return every setting to its default
+  - **Reset Markers**: restore the chapter list to the original WAV markers, or to the order the files or playlist were loaded in
+  - **Reset**: clear the loaded file and return the encode settings to your saved defaults
 - **Tools menu** for the helper scripts (see [Tools Menu](#tools-menu))
+- **Quit protection**: quitting during an encode asks first, and an unsaved chapter order offers to save a playlist
 
-The path of the loaded WAV is shown in the window title.
+The path of the loaded WAV or playlist is shown in the window title.
 
 ### Running the GUI
 
@@ -59,15 +67,17 @@ Then double-click `run_gui.ps1` to launch.
 ### GUI Workflow
 
 1. Choose **File → Import Adobe Audition WAV File…** and select a WAV file with chapter markers
-2. Enter your **Book Title** (used for the output filename and MP3 tags)
+2. Enter your **Book Title** (used for the output filename and tags)
 3. Edit chapter titles by double-clicking them in the table
 4. (Optional) **Drag chapters** to reorder them. The output is encoded in your custom order
 5. (Optional) Place cover images in the same folder as the WAV (e.g., `Book Title.jpg`, `Book Title.png`)
 6. Click **Process Covers** to associate artwork with chapters
-7. Choose encoding options (VBR/CBR, mono/stereo)
+7. Choose the **Format** (MP3 or M4B) and encoding options (VBR/CBR, mono/stereo)
 8. Set a **Size Limit** if desired (file size warning threshold)
-9. Click **Encode MP3**
-10. Watch live progress bars update as the MP3 is encoded with chapter boundaries
+9. Click **Encode MP3** / **Encode M4B**
+10. Watch live progress bars update as the file is encoded with chapter boundaries
+
+**From individual WAV files or a playlist:** use **File → Add WAV Files…** or **File → Open Playlist…** in place of step 1. Opening a playlist sets the Book Title and output folder from the playlist's name and location. Cover images are looked up next to each chapter WAV (`Book Title.jpg`, or `Cover.jpg` as a fallback), so chapters from different books can use different covers. Use **File → Save Playlist…** to keep a custom order for later.
 
 ### Tools Menu
 
@@ -88,11 +98,37 @@ The rename tools run in **preview mode** first. When the preview succeeds, click
 
 The split then runs immediately; there is no preview step.
 
+**Rename WAV Files From Chapter Titles…** (file-based chapter lists only) renames each chapter's source WAV to match its **Title** column, along with a matching `.pkf` peak file. It shows the planned renames and asks before changing anything. If a playlist is open, save it afterwards so it points at the new names.
+
+### MP3 vs M4B
+
+| | MP3 | M4B |
+|---|---|---|
+| Codec | MP3 (LAME) | AAC-LC (FFmpeg's built-in encoder) |
+| Chapters | ID3 `CHAP`/`CTOC` | QuickTime chapter track (read by iPods and Apple Books) plus Nero `chpl` |
+| Artwork | One cover per chapter, so every book title needs a cover | One cover for the whole file (the first chapter's cover) |
+| Players | Most apps; **iPods ignore MP3 chapters** | iPod Classic/Nano, Apple Books, most audiobook apps |
+
+M4B files are tagged with the Book Title and **media kind = Audiobook**, so iTunes/Finder file them under Audiobooks and the iPod remembers your position. Sample rates above 48 kHz are lowered to 48 kHz for iPod playback.
+
+**M4B VBR quality levels** use FFmpeg AAC's VBR mode on the same 0 to 9 scale as MP3. Measured bitrates on mono speech:
+
+| Level | 0 | 1 | 2 | 3 | 4 | 5 | 6 | **7 (default)** | 8 | 9 |
+|---|---|---|---|---|---|---|---|---|---|---|
+| kbps | 190 | 160 | 125 | 110 | 92 | 86 | 73 | **60** | 54 | 43 |
+
+Levels 8 and 9 save space partly by cutting treble. FFmpeg's AAC VBR mode trims high frequencies at low settings, while CBR 32 to 48 kbps mono kept the full frequency range in measurements (not a listening test). Try a chapter both ways if file size matters most. For comparison, MP3 VBR level 5 measured about 74 kbps on the same mono speech.
+
 ## Prerequisites
 
 1. Python 3.9+
-2. FFmpeg (must include both `ffmpeg` and `ffprobe`)
+2. FFmpeg (must include both `ffmpeg` and `ffprobe`; `ffplay` is used for preview only if QtMultimedia is unavailable)
 3. PyQt6 (GUI only)
+4. `mutagen` (MP3 chapter artwork and M4B tags)
+
+### Building the Windows executable
+
+With the virtual environment active, run `pyinstaller AudioBookSlicer.spec`. The app is written to `dist/AudioBookSlicer/AudioBookSlicer.exe`. FFmpeg is not bundled; it must be on `PATH` or next to the exe. The Tools menu works in the built exe: it relaunches itself with `--run-tool <script>` to run each helper.
 
 ### Windows FFmpeg install options
 
