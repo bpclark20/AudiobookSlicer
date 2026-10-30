@@ -12,12 +12,13 @@
 #     the exe by the end user.
 #   - mutagen is added as a hidden import because it is loaded via importlib at
 #     runtime rather than a normal top-level import.
-#   - The Tools menu scripts are hidden imports: the frozen exe runs them by
-#     relaunching itself as `AudioBookSlicer.exe --run-tool <module> ...`.
-#   - PyQt6.QtMultimedia powers chapter preview playback (ffplay is the fallback).
+#   - split_m4b_chapters is added as a hidden import so PyInstaller collects it
+#     for the --split-worker dispatch path.
+#   - To add a Windows taskbar icon, provide a 256x256 icon.ico and uncomment
+#     the `icon=` line in the EXE() call below.
 
 a = Analysis(
-    ["gui.py"],
+    ["app.py"],
     pathex=[],
     binaries=[],
     datas=[
@@ -29,13 +30,14 @@ a = Analysis(
         "mutagen.id3",
         "mutagen.id3._tags",
         "mutagen.id3._frames",
-        "mutagen.mp4",
-        "PyQt6.QtMultimedia",
-        "rename_utils",
-        "prefix_book_title",
-        "rename_chapters_offset",
         "split_m4b_chapters",
-        "strip_chapter_number_prefix",
+        "gui_constants",
+        "gui_helpers",
+        "gui_widgets",
+        "gui_dialogs",
+        "encode_worker",
+        "mp3_editor_window",
+        "main_window",
     ],
     hookspath=[],
     hooksconfig={},

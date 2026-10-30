@@ -804,104 +804,6 @@ def build_ffmpeg_cmd(
     return cmd
 
 
-# FFmpeg's native AAC encoder takes -q:a on an uneven 0.1-2 scale. These levels
-# mirror LAME's 0 (best) .. 9 (smallest) so one quality control works for both
-# formats. Bitrates are measured on mono 44.1 kHz speech; below level 7 the
-# encoder also lowers its bandwidth (less treble).
-AAC_VBR_QUALITY_SCALE: dict[int, float] = {
-    0: 2.0,   # ~190 kbps
-    1: 1.5,   # ~160 kbps
-    2: 1.0,   # ~125 kbps
-    3: 0.8,   # ~110 kbps
-    4: 0.7,   # ~92 kbps
-    5: 0.65,  # ~86 kbps
-    6: 0.6,   # ~73 kbps
-    7: 0.55,  # ~60 kbps
-    8: 0.5,   # ~54 kbps
-    9: 0.45,  # ~43 kbps
-}
-
-# iPods play AAC at up to 48 kHz.
-M4B_MAX_SAMPLE_RATE = 48000
-
-
-def build_ffmpeg_m4b_cmd(
-    ffmpeg_bin: str,
-    input_wav: Path,
-    ffmetadata_file: Path,
-    output_audio: Path,
-    channels: int,
-    vbr_quality: int,
-    cbr_bitrate: str | None = None,
-    sample_rate: int | None = None,
-) -> list[str]:
-    cmd = [
-        ffmpeg_bin,
-        "-hide_banner",
-        "-loglevel",
-        "error",
-        "-nostdin",
-        "-threads",
-        "0",
-        "-y",  # always overwrite; we encode to a temp file
-        "-i",
-        str(input_wav),
-        "-i",
-        str(ffmetadata_file),
-        "-map",
-        "0:a:0",
-        "-map_metadata",
-        "1",
-        "-map_chapters",
-        "1",
-        "-c:a",
-        "aac",
-        "-ac",
-        str(channels),
-    ]
-    if cbr_bitrate is not None:
-        cmd.extend(["-b:a", cbr_bitrate])
-    else:
-        quality = AAC_VBR_QUALITY_SCALE[max(0, min(9, int(vbr_quality)))]
-        cmd.extend(["-q:a", str(quality)])
-    if sample_rate is not None:
-        cmd.extend(["-ar", str(min(sample_rate, M4B_MAX_SAMPLE_RATE))])
-
-    # The ipod muxer writes chapters as a QuickTime chapter text track, which is
-    # what iPods and Apple Books read. +faststart puts the index at the front.
-    cmd.extend(["-vn", "-movflags", "+faststart", "-f", "ipod", str(output_audio)])
-    return cmd
-
-
-def write_m4b_tags(output_file: Path, book_title: str | None, cover_path: Path | None) -> None:
-    try:
-        mp4_module = importlib.import_module("mutagen.mp4")
-    except ImportError:
-        fail(
-            "M4B tagging requires the 'mutagen' package. "
-            f"Active interpreter: {sys.executable}. "
-            "Install it with this interpreter: python -m pip install mutagen"
-        )
-
-    MP4 = getattr(mp4_module, "MP4")
-    MP4Cover = getattr(mp4_module, "MP4Cover")
-
-    audio = MP4(str(output_file))
-    if audio.tags is None:
-        audio.add_tags()
-    tags = audio.tags
-    if book_title:
-        tags["\xa9nam"] = [book_title]
-        tags["\xa9alb"] = [book_title]
-    tags["stik"] = [2]  # media kind: Audiobook (keeps position, shows under Audiobooks)
-    if cover_path is not None:
-        image_format = (
-            MP4Cover.FORMAT_PNG if cover_mime_type(cover_path) == "image/png" else MP4Cover.FORMAT_JPEG
-        )
-        tags["covr"] = [MP4Cover(cover_path.read_bytes(), imageformat=image_format)]
-    audio.save()
-
-
 def cover_mime_type(path: Path) -> str:
     suffix = path.suffix.lower()
     if suffix in {".jpg", ".jpeg"}:
@@ -1067,32 +969,22 @@ def encode_output(
     on_process_started: Callable[[subprocess.Popen[str]], None] | None = None,
     on_process_finished: Callable[[], None] | None = None,
     sample_rate: int | None = None,
-    output_format: str = "mp3",
-    book_title: str | None = None,
 ) -> int:
-    """Encode input_file with chapters. output_format is "mp3" or "m4b".
-
-    For M4B, cover_map is optional: the first chapter with a cover supplies the
-    file's single cover image (M4B has no per-chapter artwork that ffmpeg can write).
-    """
-    if output_format not in ("mp3", "m4b"):
-        fail(f"Unsupported output format: {output_format}")
     output_file.parent.mkdir(parents=True, exist_ok=True)
     temp_fd, temp_path_str = tempfile.mkstemp(
-        suffix=f".{output_format}",
+        suffix=".mp3",
         prefix="wav2audio_tmp_",
         dir=output_file.parent,
     )
     os.close(temp_fd)
     temp_output = Path(temp_path_str)
-    build_cmd = build_ffmpeg_m4b_cmd if output_format == "m4b" else build_ffmpeg_cmd
 
     try:
         with tempfile.TemporaryDirectory(prefix="wav2mp3_meta_") as temp_dir:
             meta_file = Path(temp_dir) / "chapters.ffmeta"
             write_ffmetadata(meta_file, chapters)
 
-            cmd = build_cmd(
+            cmd = build_ffmpeg_cmd(
                 ffmpeg_bin=ffmpeg_bin,
                 input_wav=input_file,
                 ffmetadata_file=meta_file,
@@ -1142,36 +1034,30 @@ def encode_output(
         temp_output.unlink(missing_ok=True)
         raise
 
-    if output_format == "m4b":
-        cover_path = next(
-            (
-                cover_map[title]
-                for chapter in chapters
-                if (title := chapter.title.split(" - ", 1)[0].strip()) in cover_map
-            ),
-            None,
-        )
-        write_m4b_tags(output_file, book_title, cover_path)
-        tag_line = (
-            f"MP4 tags written: chapters={len(chapters)}, "
-            f"cover={'yes' if cover_path else 'no'}, media kind=Audiobook"
+    actual_size_bytes = output_file.stat().st_size
+
+    chap_count, ctoc_count, apic_count = write_mp3_chapters_with_artwork(
+        output_file,
+        chapters,
+        cover_map,
+    )
+
+    if progress_label:
+        created_line = f"[{progress_label}] Created: {output_file}"
+        size_line = f"[{progress_label}] Actual size: {format_bytes(actual_size_bytes)}"
+        print(created_line)
+        print(size_line)
+        print(
+            f"[{progress_label}] ID3 chapter tags written: "
+            f"CHAP={chap_count}, CTOC={ctoc_count}, APIC(in CHAP)={apic_count}"
         )
     else:
-        chap_count, ctoc_count, apic_count = write_mp3_chapters_with_artwork(
-            output_file,
-            chapters,
-            cover_map,
-        )
-        tag_line = (
+        print(f"Created: {output_file}")
+        print(f"Actual size: {format_bytes(actual_size_bytes)}")
+        print(
             "ID3 chapter tags written: "
             f"CHAP={chap_count}, CTOC={ctoc_count}, APIC(in CHAP)={apic_count}"
         )
-
-    actual_size_bytes = output_file.stat().st_size
-    prefix = f"[{progress_label}] " if progress_label else ""
-    print(f"{prefix}Created: {output_file}")
-    print(f"{prefix}Actual size: {format_bytes(actual_size_bytes)}")
-    print(f"{prefix}{tag_line}")
     return actual_size_bytes
 
 
